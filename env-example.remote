@@ -11,6 +11,16 @@ REMOTE_TRANSCRIBER_API_KEY=your_api_key_here
 REMOTE_TRANSCRIBER_MODEL=whisper-v3-turbo
 REMOTE_TRANSCRIBER_TEMPERATURE=0
 REMOTE_TRANSCRIBER_VAD_MODEL=silero
+
+# Optional: if your remote transcription endpoint is this repo's
+# services/transcription-service running in OpenAI mode, configure that service with:
+# TRANSCRIBER_PROVIDER=openai
+# TRANSCRIBER_PROVIDER_CONFIG_JSON={"openai":{"api_key":"${REMOTE_TRANSCRIBER_API_KEY}","model":"gpt-4o-mini-transcribe","base_url":"https://api.openai.com/v1","timeout_s":30},"assemblyai":{},"deepgram":{},"revai":{},"gcp":{},"telnyx":{},"soniox":{},"elevenlabs":{}}
+#
+# For other providers, set TRANSCRIBER_PROVIDER to one of:
+# assemblyai|deepgram|revai|gcp|telnyx|soniox|elevenlabs
+# and provide that provider's config block in TRANSCRIBER_PROVIDER_CONFIG_JSON
+# (typically requires at least ws_url + api_key).
 # Voice Agent / TTS Configuration (Optional)
 # Required only if using the voice agent feature (voice_agent_enabled: true)
 OPENAI_API_KEY=

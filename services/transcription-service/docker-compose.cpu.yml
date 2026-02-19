@@ -34,6 +34,10 @@ services:
       - DEVICE=cpu
       - COMPUTE_TYPE=int8
       - CPU_THREADS=${CPU_THREADS:-0}
+      - API_TOKEN=${API_TOKEN:-}
+      - TRANSCRIBER_PROVIDER=${TRANSCRIBER_PROVIDER:-local}
+      - TRANSCRIBER_PROVIDER_CONFIG_JSON=${TRANSCRIBER_PROVIDER_CONFIG_JSON:-}
+      - REMOTE_TRANSCRIBER_API_KEY=${REMOTE_TRANSCRIBER_API_KEY:-}
     volumes:
       - ./models:/app/models
     restart: unless-stopped
@@ -82,4 +86,3 @@ networks:
   vexa-network:
     external: true
     name: vexa-network
-

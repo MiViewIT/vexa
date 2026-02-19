@@ -125,6 +125,13 @@ docker run -d \
 
 **API available at:** `http://localhost:8056`
 
+**Remote profile note (self-hosted transcription-service adapter):**
+- Keep Vexa remote wiring unchanged: `REMOTE_TRANSCRIBER_URL` points to `/v1/audio/transcriptions`.
+- In `services/transcription-service`, you can now switch provider with:
+  - `TRANSCRIBER_PROVIDER=openai`
+  - `TRANSCRIBER_PROVIDER_CONFIG_JSON` (JSON block for `openai` and future providers)
+  - `REMOTE_TRANSCRIBER_API_KEY` (reused as OpenAI key fallback)
+
 
 ## Testing
 

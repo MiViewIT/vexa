@@ -5,6 +5,7 @@ A production-ready, scalable transcription service compatible with Vexa's remote
 ## Features
 
 ✅ **OpenAI Whisper API Compatible** - Works seamlessly with Vexa's RemoteTranscriber  
+✅ **Provider Adapter Architecture** - Select transcriber backend via env (`local`, `openai`, `assemblyai`, `deepgram`, `revai`, `gcp`, `telnyx`, `soniox`, `elevenlabs`)  
 ✅ **Load Balanced** - Nginx distributes requests across multiple workers  
 ✅ **Self-Healing** - Automatic health checks and failover  
 ✅ **Scalable** - Easy replica management (3 workers by default)  
@@ -119,6 +120,14 @@ export REMOTE_TRANSCRIBER_MODEL=whisper-1
 export REMOTE_TRANSCRIBER_TEMPERATURE=0
 ```
 
+### 2b. Configure this service to use OpenAI Realtime (optional)
+
+```bash
+export TRANSCRIBER_PROVIDER=openai
+export REMOTE_TRANSCRIBER_API_KEY=your_openai_api_key
+export TRANSCRIBER_PROVIDER_CONFIG_JSON='{\"openai\":{\"model\":\"gpt-4o-mini-transcribe\",\"base_url\":\"https://api.openai.com/v1\",\"timeout_s\":30},\"assemblyai\":{},\"deepgram\":{},\"revai\":{},\"gcp\":{},\"telnyx\":{},\"soniox\":{},\"elevenlabs\":{}}'
+```
+
 ### 3. Start Vexa with Remote Backend
 
 The WhisperLive service will automatically detect the remote backend configuration and use your transcription service instead of running local Whisper models.
@@ -178,6 +187,18 @@ DEVICE=cuda                    # Device: cuda or cpu (default: cuda)
 COMPUTE_TYPE=int8              # Compute type: int8, float16, float32 (default: int8)
 CPU_THREADS=4                  # CPU threads (0 = auto-detect, default: 0)
 
+# Provider configuration
+TRANSCRIBER_PROVIDER=local     # local|openai|assemblyai|deepgram|revai|gcp|telnyx|soniox|elevenlabs
+TRANSCRIBER_PROVIDER_CONFIG_JSON=
+REMOTE_TRANSCRIBER_API_KEY=    # Used as fallback OpenAI key in openai mode
+DEEPGRAM_API_KEY=              # Optional provider-specific fallback
+ASSEMBLYAI_API_KEY=
+REVAI_API_KEY=
+GCP_API_KEY=
+TELNYX_API_KEY=
+SONIOX_API_KEY=
+ELEVENLABS_API_KEY=
+
 # Load management / backpressure
 # Recommended for WhisperLive streaming: FAIL_FAST_WHEN_BUSY=true (prefer latest buffered audio)
 MAX_CONCURRENT_TRANSCRIPTIONS=2 # Max concurrent model calls per worker
@@ -217,6 +238,33 @@ CPU_THREADS=4  # Set to number of physical CPU cores
 ```bash
 curl http://localhost:8083/lb-status
 ```
+
+## Provider Extension Contract
+
+`main.py` calls a provider adapter (`transcription_provider`) and expects normalized output:
+- `text`
+- `language`
+- `duration`
+- `segments[]` (single synthetic segment in realtime-provider mode)
+
+Current state:
+- `local`: implemented (faster-whisper)
+- `openai`: implemented (Realtime transcription with OpenAI event defaults)
+- `assemblyai`, `deepgram`, `revai`, `gcp`, `telnyx`, `soniox`, `elevenlabs`: implemented via the same configurable realtime websocket adapter
+
+Standard per-provider config object in `TRANSCRIBER_PROVIDER_CONFIG_JSON`:
+- `api_key`
+- `ws_url` (required for non-openai providers)
+- `model`
+- `timeout_s`
+- `sample_rate_hz`
+- `auth_header_name`
+- `auth_header_prefix`
+- `query` (optional object with `${...}` placeholders)
+- `messages.session`, `messages.append`, `messages.commit`
+- `events.delta_types`, `events.final_types`, `events.delta_field`, `events.final_field`
+
+This gives one common implementation path for adding new providers: add defaults + env fallback in `transcription_provider`, then supply provider-specific config.
 
 ### Check Individual Workers
 
