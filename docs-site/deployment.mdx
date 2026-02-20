@@ -132,6 +132,28 @@ docker run -d \
   - `TRANSCRIBER_PROVIDER_CONFIG_JSON` (JSON block for `openai` and future providers)
   - `REMOTE_TRANSCRIBER_API_KEY` (reused as OpenAI key fallback)
 
+## Temporal + Nomad (lean master node)
+
+For a minimal always-on control plane, run `bot-manager` in Temporal mode and keep bot/transcription work ephemeral via Nomad dispatch.
+
+- Set `ORCHESTRATOR=temporal` on `bot-manager`.
+- Configure:
+  - `TEMPORAL_ADDRESS`
+  - `TEMPORAL_NAMESPACE`
+  - `TEMPORAL_TLS_ENABLED`
+  - `TEMPORAL_TASK_QUEUE_MEETING`
+  - `TEMPORAL_TASK_QUEUE_DEFERRED`
+  - `TEMPORAL_TASK_QUEUE_CAPACITY`
+  - `NOMAD_ADDR` (or `NOMAD_IP_http`)
+  - `VEXA_BOT_JOB_NAME`
+  - `TRANSCRIPTION_WORKER_JOB_NAME`
+
+Behavior:
+- Realtime audio path is unchanged: bot -> transcription service.
+- Temporal handles durable meeting lifecycle control, retries, timers, stop/reconfigure signals, and deferred transcription workflows.
+- Startup fails fast when `ORCHESTRATOR=temporal` and Temporal is unreachable.
+- In Docker Compose, set `ORCHESTRATOR=temporal`; `make up`/`make all` will include the `temporal-worker` profile automatically.
+
 
 ## Testing
 

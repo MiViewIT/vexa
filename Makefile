@@ -1,4 +1,4 @@
-.PHONY: all setup submodules env force-env setup-transcription-service-env build-bot-image build build-transcription-service up up-transcription-service down down-transcription-service ps logs test test-api test-setup migrate makemigrations init-db stamp-db migrate-or-init migration-status
+.PHONY: all setup submodules env force-env setup-transcription-service-env build-bot-image build build-transcription-service up up-transcription-service down down-transcription-service ps logs test test-api test-setup migrate makemigrations init-db stamp-db migrate-or-init migration-status start-temporal-local stop-temporal-local start-nomad-local stop-nomad-local start-orchestrators-local stop-orchestrators-local
 
 # Default target: Sets up everything and starts the services
 all: setup-env build up migrate-or-init test
@@ -211,14 +211,23 @@ build-transcription-service: check_docker
 # Build Docker Compose service images
 build: check_docker build-bot-image build-transcription-service
 	@REMOTE_DB=$$(grep -E '^[[:space:]]*REMOTE_DB=' .env 2>/dev/null | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' | tr '[:upper:]' '[:lower:]' || echo "false"); \
+	ORCH=$$(grep -E '^[[:space:]]*ORCHESTRATOR=' .env 2>/dev/null | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' | tr '[:upper:]' '[:lower:]' || echo "docker"); \
 	COMPOSE_FILES="-f docker-compose.yml"; \
 	if [ "$$REMOTE_DB" != "true" ]; then \
 		COMPOSE_FILES="$$COMPOSE_FILES -f docker-compose.local-db.yml"; \
 	fi; \
-	docker compose $$COMPOSE_FILES --profile remote build
+	PROFILES="--profile remote"; \
+	if [ "$$ORCH" = "temporal" ]; then \
+		PROFILES="$$PROFILES --profile temporal"; \
+	fi; \
+	docker compose $$COMPOSE_FILES $$PROFILES build
 
 # Start transcription-service based on TRANSCRIPTION
 up-transcription-service: check_docker
+	@if ! docker network ls | grep -q "vexa-network"; then \
+		echo "Creating vexa-network..."; \
+		docker network create vexa-network || true; \
+	fi
 	@if [ "$(TRANSCRIPTION)" = "remote" ]; then \
 		exit 0; \
 	elif [ "$(TRANSCRIPTION)" = "cpu" ]; then \
@@ -238,6 +247,7 @@ up: check_docker
 		$(MAKE) up-transcription-service; \
 	fi
 	@REMOTE_DB=$$(grep -E '^[[:space:]]*REMOTE_DB=' .env 2>/dev/null | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' | tr '[:upper:]' '[:lower:]' || echo "false"); \
+	ORCH=$$(grep -E '^[[:space:]]*ORCHESTRATOR=' .env 2>/dev/null | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$$//' | tr '[:upper:]' '[:lower:]' || echo "docker"); \
 	COMPOSE_FILES="-f docker-compose.yml"; \
 	if [ "$$REMOTE_DB" != "true" ]; then \
 		COMPOSE_FILES="$$COMPOSE_FILES -f docker-compose.local-db.yml"; \
@@ -246,7 +256,11 @@ up: check_docker
 		echo "Creating vexa-network..."; \
 		docker network create vexa-network || true; \
 	fi; \
-	docker compose $$COMPOSE_FILES --profile remote up -d; \
+	PROFILES="--profile remote"; \
+	if [ "$$ORCH" = "temporal" ]; then \
+		PROFILES="$$PROFILES --profile temporal"; \
+	fi; \
+	docker compose $$COMPOSE_FILES $$PROFILES up -d; \
 	sleep 3; \
 	if [ "$$REMOTE_DB" = "true" ]; then \
 		if docker compose $$COMPOSE_FILES ps -q postgres 2>/dev/null | grep -q .; then \
@@ -464,3 +478,40 @@ migration-status: check_docker
 	fi
 	@docker compose $$COMPOSE_FILES exec -T transcription-collector alembic -c /app/alembic.ini current
 	@docker compose $$COMPOSE_FILES exec -T transcription-collector alembic -c /app/alembic.ini history --verbose
+
+# --- Local orchestration dev helpers (Temporal + Nomad) ---
+
+start-temporal-local: check_docker
+	@docker rm -f vexa-temporal-dev >/dev/null 2>&1 || true
+	@docker run -d \
+		--name vexa-temporal-dev \
+		-p 7233:7233 \
+		-p 8233:8233 \
+		temporalio/auto-setup:1.25.2 >/dev/null
+	@echo "Temporal dev server started: grpc=localhost:7233 ui=http://localhost:8233"
+
+stop-temporal-local: check_docker
+	@docker rm -f vexa-temporal-dev >/dev/null 2>&1 || true
+	@echo "Temporal dev server stopped"
+
+start-nomad-local: check_docker
+	@docker rm -f vexa-nomad-dev >/dev/null 2>&1 || true
+	@docker run -d \
+		--name vexa-nomad-dev \
+		-p 4646:4646 \
+		-p 4647:4647 \
+		-p 4648:4648 \
+		--cap-add IPC_LOCK \
+		hashicorp/nomad:1.8.4 \
+		agent -dev -bind=0.0.0.0 -client=0.0.0.0 >/dev/null
+	@echo "Nomad dev agent started: http://localhost:4646"
+
+stop-nomad-local: check_docker
+	@docker rm -f vexa-nomad-dev >/dev/null 2>&1 || true
+	@echo "Nomad dev agent stopped"
+
+start-orchestrators-local: start-temporal-local start-nomad-local
+	@echo "Local orchestrators ready. Set ORCHESTRATOR=temporal, TEMPORAL_ADDRESS=host.docker.internal:7233, NOMAD_ADDR=http://host.docker.internal:4646"
+
+stop-orchestrators-local: stop-temporal-local stop-nomad-local
+	@echo "Local orchestrators stopped"

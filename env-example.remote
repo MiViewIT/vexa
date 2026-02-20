@@ -5,6 +5,19 @@ WHISPER_MODEL_SIZE=medium
 DEVICE_TYPE=remote
 WL_MAX_CLIENTS=10
 BOT_IMAGE_NAME=vexa-bot:dev
+ORCHESTRATOR=docker
+# Set ORCHESTRATOR=temporal to enable Temporal control plane mode.
+# In temporal mode, bot-manager starts workflows and signals lifecycle events.
+# Docker Compose will include the temporal worker automatically when ORCHESTRATOR=temporal.
+
+# Temporal (required only when ORCHESTRATOR=temporal)
+TEMPORAL_ADDRESS=
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TLS_ENABLED=false
+TEMPORAL_TASK_QUEUE_MEETING=vexa-meeting
+TEMPORAL_TASK_QUEUE_DEFERRED=vexa-deferred
+TEMPORAL_TASK_QUEUE_CAPACITY=vexa-capacity
+TEMPORAL_WORKFLOW_ID_PREFIX=
 # Remote Transcriber API Configuration
 REMOTE_TRANSCRIBER_URL=https://transcription-service.dev.vexa.ai/v1/audio/transcriptions
 REMOTE_TRANSCRIBER_API_KEY=your_api_key_here
@@ -68,3 +81,9 @@ LOCAL_STORAGE_FSYNC=true
 # WhisperLive durable recording upload cadence
 WL_RECORDING_SNAPSHOT_SECONDS=20
 WL_RECORDING_UPLOAD_URL=http://bot-manager:8080/internal/recordings/upload
+
+# Nomad dispatch targets for ephemeral workers (temporal+nomad mode)
+NOMAD_ADDR=
+NOMAD_IP_http=
+VEXA_BOT_JOB_NAME=vexa-bot
+TRANSCRIPTION_WORKER_JOB_NAME=vexa-transcription-worker

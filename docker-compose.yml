@@ -57,6 +57,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - BOT_IMAGE_NAME=${BOT_IMAGE_NAME:-vexa-bot:dev}
+      - ORCHESTRATOR=${ORCHESTRATOR:-docker}
       - TTS_SERVICE_URL=http://tts-service:8002
       - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa}_vexa_default
       - LOG_LEVEL=DEBUG
@@ -91,6 +92,18 @@ services:
       - CAPTURE_MODES=${CAPTURE_MODES:-audio}
       # Voice agent / TTS
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Temporal orchestration (used when ORCHESTRATOR=temporal)
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_TLS_ENABLED=${TEMPORAL_TLS_ENABLED:-false}
+      - TEMPORAL_TASK_QUEUE_MEETING=${TEMPORAL_TASK_QUEUE_MEETING:-vexa-meeting}
+      - TEMPORAL_TASK_QUEUE_DEFERRED=${TEMPORAL_TASK_QUEUE_DEFERRED:-vexa-deferred}
+      - TEMPORAL_TASK_QUEUE_CAPACITY=${TEMPORAL_TASK_QUEUE_CAPACITY:-vexa-capacity}
+      - TEMPORAL_WORKFLOW_ID_PREFIX=${TEMPORAL_WORKFLOW_ID_PREFIX:-}
+      - TRANSCRIPTION_WORKER_JOB_NAME=${TRANSCRIPTION_WORKER_JOB_NAME:-vexa-transcription-worker}
+      - VEXA_BOT_JOB_NAME=${VEXA_BOT_JOB_NAME:-vexa-bot}
+      - NOMAD_ADDR=${NOMAD_ADDR:-}
+      - NOMAD_IP_http=${NOMAD_IP_http:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../.cursor:/app/.cursor
@@ -100,6 +113,38 @@ services:
       redis:
         condition: service_started
       tts-service:
+        condition: service_started
+    networks:
+      - vexa_default
+    restart: unless-stopped
+
+  temporal-worker:
+    profiles: ["temporal"]
+    build:
+      context: .
+      dockerfile: services/bot-manager/Dockerfile
+    command: python -m app.temporal.worker
+    environment:
+      - LOG_LEVEL=DEBUG
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-vexa}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_SSL_MODE=${DB_SSL_MODE:-disable}
+      - TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS:-}
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:-default}
+      - TEMPORAL_TLS_ENABLED=${TEMPORAL_TLS_ENABLED:-false}
+      - TEMPORAL_TASK_QUEUE_MEETING=${TEMPORAL_TASK_QUEUE_MEETING:-vexa-meeting}
+      - TEMPORAL_TASK_QUEUE_DEFERRED=${TEMPORAL_TASK_QUEUE_DEFERRED:-vexa-deferred}
+      - TEMPORAL_TASK_QUEUE_CAPACITY=${TEMPORAL_TASK_QUEUE_CAPACITY:-vexa-capacity}
+      - NOMAD_ADDR=${NOMAD_ADDR:-}
+      - NOMAD_IP_http=${NOMAD_IP_http:-}
+      - VEXA_BOT_JOB_NAME=${VEXA_BOT_JOB_NAME:-vexa-bot}
+      - TRANSCRIPTION_WORKER_JOB_NAME=${TRANSCRIPTION_WORKER_JOB_NAME:-vexa-transcription-worker}
+    init: true
+    depends_on:
+      bot-manager:
         condition: service_started
     networks:
       - vexa_default

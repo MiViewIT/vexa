@@ -188,6 +188,8 @@ class TranscriptionJob(Base):
     # Results
     segments_count = Column(Integer, nullable=True)
     session_uid = Column(String, nullable=True, index=True)  # The session_uid used for transcription segments
+    workflow_id = Column(String(255), nullable=True, index=True)  # Temporal workflow id
+    run_id = Column(String(255), nullable=True, index=True)  # Temporal run id
 
     created_at = Column(DateTime, server_default=func.now(), index=True)
     started_at = Column(DateTime, nullable=True)

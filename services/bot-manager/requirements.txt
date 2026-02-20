@@ -26,6 +26,7 @@ aiosqlite # If using sqlite async (often for testing)
 
 requests
 httpx
+temporalio>=1.7.0
 psycopg2-binary
 aiodocker
 boto3  # MinIO/S3 storage for recordings

@@ -22,12 +22,14 @@ from .config import BOT_IMAGE_NAME, REDIS_URL
 from app.orchestrators import (
     get_socket_session, close_docker_client, start_bot_container,
     stop_bot_container, _record_session_start, get_running_bots_status,
-    verify_container_running,
+    verify_container_running, signal_stop_meeting, query_meeting_workflow,
+    signal_reconfigure_meeting, signal_bot_status_update,
+    start_deferred_transcription_workflow, check_orchestrator_health,
 )
 # Note: get_running_bots_status and verify_container_running are abstracted
 # and work for both Docker containers and process orchestrator (Lite setup)
 from shared_models.database import init_db, get_db, async_session_local
-from shared_models.models import User, Meeting, MeetingSession, Transcription, Recording, MediaFile
+from shared_models.models import User, Meeting, MeetingSession, Transcription, Recording, MediaFile, TranscriptionJob
 from shared_models.schemas import (
     MeetingCreate, MeetingResponse, Platform, BotStatusResponse, MeetingConfigUpdate,
     MeetingStatus, MeetingCompletionReason, MeetingFailureStage,
@@ -312,6 +314,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot_manager")
 
+ORCHESTRATOR_MODE = os.getenv("ORCHESTRATOR", "docker").strip().lower()
+
+
+def _is_temporal_orchestrator() -> bool:
+    return ORCHESTRATOR_MODE == "temporal"
+
+
+def _get_temporal_workflow_id_from_meeting(meeting: Meeting) -> Optional[str]:
+    data = meeting.data if isinstance(meeting.data, dict) else {}
+    temporal = data.get("temporal", {}) if isinstance(data, dict) else {}
+    workflow_id = temporal.get("workflow_id") if isinstance(temporal, dict) else None
+    if workflow_id:
+        return str(workflow_id)
+    if _is_temporal_orchestrator() and meeting.bot_container_id:
+        return str(meeting.bot_container_id)
+    return None
+
 # Initialize the FastAPI app
 app = FastAPI(title="Vexa Bot Manager")
 
@@ -431,6 +450,13 @@ class BotStatusChangePayload(BaseModel):
     failure_stage: Optional[MeetingFailureStage] = Field(None, description="Stage where failure occurred if applicable.")
     timestamp: Optional[str] = Field(None, description="Timestamp of the status change.")
 
+
+class DeferredJobStartPayload(BaseModel):
+    recording_id: int
+    meeting_id: Optional[int] = None
+    language: Optional[str] = None
+    task: str = "transcribe"
+
 # --- --------------------------------------------- ---
 
 @app.on_event("startup")
@@ -443,6 +469,20 @@ async def startup_event():
         get_socket_session()
     except Exception as e:
         logger.error(f"Failed to initialize Docker client on startup: {e}", exc_info=True)
+        if _is_temporal_orchestrator():
+            raise RuntimeError(f"Temporal orchestrator initialization failed: {e}") from e
+
+    if _is_temporal_orchestrator() and check_orchestrator_health:
+        health = await check_orchestrator_health()
+        if not health.get("ok"):
+            error = health.get("error", "unknown error")
+            logger.error("Temporal orchestrator health check failed at startup: %s", error)
+            raise RuntimeError(f"Temporal orchestrator unavailable: {error}")
+        logger.info(
+            "Temporal orchestrator health check passed: address=%s namespace=%s",
+            health.get("address"),
+            health.get("namespace"),
+        )
 
     # --- ADD Redis Client Initialization ---
     try:
@@ -825,6 +865,14 @@ async def request_bot(
         # Only set the container ID, keep status as 'requested' until bot confirms it's running
         logger.info(f"Setting container ID {container_id} for meeting {meeting_id} (status remains 'requested' until bot confirms startup)")
         current_meeting_for_bot_launch.bot_container_id = container_id
+        if _is_temporal_orchestrator():
+            if current_meeting_for_bot_launch.data is None or not isinstance(current_meeting_for_bot_launch.data, dict):
+                current_meeting_for_bot_launch.data = {}
+            temporal_meta = dict(current_meeting_for_bot_launch.data.get("temporal") or {})
+            temporal_meta["workflow_id"] = container_id
+            temporal_meta["last_signal_ts"] = datetime.utcnow().isoformat()
+            temporal_meta["last_query_state"] = {"state": "requested"}
+            current_meeting_for_bot_launch.data["temporal"] = temporal_meta
         # current_meeting_for_bot_launch.status = 'active'  # REMOVED - handled by callback
         # current_meeting_for_bot_launch.start_time = datetime.utcnow()  # REMOVED - handled by callback
         await db.commit()
@@ -951,6 +999,24 @@ async def update_bot_config(
             detail="Failed to send reconfiguration command to the bot."
         )
 
+    if _is_temporal_orchestrator() and signal_reconfigure_meeting:
+        workflow_id = _get_temporal_workflow_id_from_meeting(active_meeting)
+        if workflow_id:
+            try:
+                await signal_reconfigure_meeting(
+                    workflow_id,
+                    language=req.language,
+                    task=req.task,
+                    transcription_tier=None,
+                )
+                temporal_meta = dict((active_meeting.data or {}).get("temporal") or {})
+                temporal_meta["last_signal_ts"] = datetime.utcnow().isoformat()
+                active_meeting.data = dict(active_meeting.data or {})
+                active_meeting.data["temporal"] = temporal_meta
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"Temporal reconfigure signal failed for workflow {workflow_id}: {e}")
+
     # 4. Return 202 Accepted
     return {"message": "Reconfiguration request accepted and sent to the bot."}
 # -------------------------------------------
@@ -1026,6 +1092,19 @@ async def stop_bot(
             continue
 
         logger.info(f"Found meeting {meeting.id} (status: {meeting.status}) with container {meeting.bot_container_id} for stop request.")
+
+        if _is_temporal_orchestrator() and signal_stop_meeting:
+            workflow_id = _get_temporal_workflow_id_from_meeting(meeting)
+            if workflow_id:
+                try:
+                    await signal_stop_meeting(workflow_id, reason="user_stop_request")
+                    temporal_meta = dict((meeting.data or {}).get("temporal") or {})
+                    temporal_meta["last_signal_ts"] = datetime.utcnow().isoformat()
+                    meeting.data = dict(meeting.data or {})
+                    meeting.data["temporal"] = temporal_meta
+                    await db.commit()
+                except Exception as e:
+                    logger.warning(f"Temporal stop signal failed for workflow {workflow_id}: {e}")
 
         # --- SIMPLE FAST-PATH: If very recent and pre-active, finalize immediately and kill container ---
         try:
@@ -1244,6 +1323,20 @@ async def bot_exit_callback(
         # Publish meeting status change via Redis Pub/Sub
         if new_status:
             await publish_meeting_status_change(meeting.id, new_status, redis_client, meeting.platform, meeting.platform_specific_id, meeting.user_id)
+            if _is_temporal_orchestrator() and signal_bot_status_update:
+                workflow_id = _get_temporal_workflow_id_from_meeting(meeting)
+                if workflow_id:
+                    try:
+                        await signal_bot_status_update(
+                            workflow_id,
+                            status=new_status,
+                            reason=payload.reason,
+                            exit_code=payload.exit_code,
+                            container_id=meeting.bot_container_id,
+                            payload={"meeting_id": meeting.id, "connection_id": payload.connection_id},
+                        )
+                    except Exception as e:
+                        logger.warning(f"Temporal status signal failed (exit callback) workflow={workflow_id}: {e}")
 
         # ALWAYS schedule post-meeting tasks, regardless of exit code
         logger.info(f"Bot exit callback: Scheduling post-meeting tasks for meeting {meeting.id}.")
@@ -1342,6 +1435,19 @@ async def bot_startup_callback(
         # Publish meeting status change via Redis Pub/Sub (only if status changed to 'active')
         if meeting.status == MeetingStatus.ACTIVE.value and old_status != MeetingStatus.ACTIVE.value:
             await publish_meeting_status_change(meeting.id, MeetingStatus.ACTIVE.value, redis_client, meeting.platform, meeting.platform_specific_id, meeting.user_id)
+            if _is_temporal_orchestrator() and signal_bot_status_update:
+                workflow_id = _get_temporal_workflow_id_from_meeting(meeting)
+                if workflow_id:
+                    try:
+                        await signal_bot_status_update(
+                            workflow_id,
+                            status=MeetingStatus.ACTIVE.value,
+                            reason="startup_callback",
+                            container_id=container_id,
+                            payload={"meeting_id": meeting.id, "connection_id": payload.connection_id},
+                        )
+                    except Exception as e:
+                        logger.warning(f"Temporal status signal failed (startup callback) workflow={workflow_id}: {e}")
 
         return {"status": "startup processed", "meeting_id": meeting.id, "meeting_status": meeting.status}
 
@@ -1414,6 +1520,19 @@ async def bot_joining_callback(
             # Publish status change to Redis
             await publish_meeting_status_change(meeting.id, MeetingStatus.JOINING.value, redis_client, meeting.platform, meeting.platform_specific_id, meeting.user_id)
             # No manual transition writes here; update_meeting_status already recorded the transition
+            if _is_temporal_orchestrator() and signal_bot_status_update:
+                workflow_id = _get_temporal_workflow_id_from_meeting(meeting)
+                if workflow_id:
+                    try:
+                        await signal_bot_status_update(
+                            workflow_id,
+                            status=MeetingStatus.JOINING.value,
+                            reason="joining_callback",
+                            container_id=container_id,
+                            payload={"meeting_id": meeting.id, "connection_id": payload.connection_id},
+                        )
+                    except Exception as e:
+                        logger.warning(f"Temporal status signal failed (joining callback) workflow={workflow_id}: {e}")
 
         return {"status": "joining processed", "meeting_id": meeting.id, "meeting_status": meeting.status}
 
@@ -1486,6 +1605,19 @@ async def bot_awaiting_admission_callback(
             # Publish status change to Redis
             await publish_meeting_status_change(meeting.id, MeetingStatus.AWAITING_ADMISSION.value, redis_client, meeting.platform, meeting.platform_specific_id, meeting.user_id)
             # No manual transition writes here; update_meeting_status already recorded the transition
+            if _is_temporal_orchestrator() and signal_bot_status_update:
+                workflow_id = _get_temporal_workflow_id_from_meeting(meeting)
+                if workflow_id:
+                    try:
+                        await signal_bot_status_update(
+                            workflow_id,
+                            status=MeetingStatus.AWAITING_ADMISSION.value,
+                            reason="awaiting_admission_callback",
+                            container_id=container_id,
+                            payload={"meeting_id": meeting.id, "connection_id": payload.connection_id},
+                        )
+                    except Exception as e:
+                        logger.warning(f"Temporal status signal failed (awaiting callback) workflow={workflow_id}: {e}")
 
         return {"status": "awaiting_admission processed", "meeting_id": meeting.id, "meeting_status": meeting.status}
 
@@ -1671,6 +1803,25 @@ async def bot_status_change_callback(
         # Publish meeting status change via Redis Pub/Sub
         if success or (new_status == MeetingStatus.ACTIVE and meeting.status == MeetingStatus.ACTIVE.value):
             await publish_meeting_status_change(meeting.id, new_status.value, redis_client, meeting.platform, meeting.platform_specific_id, meeting.user_id)
+            if _is_temporal_orchestrator() and signal_bot_status_update:
+                workflow_id = _get_temporal_workflow_id_from_meeting(meeting)
+                if workflow_id:
+                    try:
+                        await signal_bot_status_update(
+                            workflow_id,
+                            status=new_status.value,
+                            reason=reason,
+                            exit_code=payload.exit_code,
+                            container_id=payload.container_id or meeting.bot_container_id,
+                            payload={
+                                "meeting_id": meeting.id,
+                                "connection_id": payload.connection_id,
+                                "failure_stage": payload.failure_stage.value if payload.failure_stage else None,
+                                "completion_reason": payload.completion_reason.value if payload.completion_reason else None,
+                            },
+                        )
+                    except Exception as e:
+                        logger.warning(f"Temporal status signal failed (unified callback) workflow={workflow_id}: {e}")
 
         # Schedule webhook task for status change (for all status changes)
         await schedule_status_webhook_task(
@@ -1693,6 +1844,50 @@ async def bot_status_change_callback(
         )
 
 # --- RECORDING ENDPOINTS ---
+
+@app.post("/internal/transcription-jobs/{job_id}/start",
+          status_code=status.HTTP_202_ACCEPTED,
+          summary="Internal: start deferred transcription workflow",
+          include_in_schema=False)
+async def start_deferred_transcription_job(
+    job_id: int,
+    payload: DeferredJobStartPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start Temporal deferred transcription workflow for a persisted job.
+
+    In non-temporal modes this endpoint returns 409 to avoid ambiguous behavior.
+    """
+    if not _is_temporal_orchestrator() or not start_deferred_transcription_workflow:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Deferred workflow start requires ORCHESTRATOR=temporal")
+
+    job = await db.get(TranscriptionJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Transcription job not found")
+
+    wf_payload = {
+        "recording_id": payload.recording_id,
+        "job_id": job_id,
+        "meeting_id": payload.meeting_id if payload.meeting_id is not None else job.meeting_id,
+        "user_id": job.user_id,
+        "language": payload.language if payload.language is not None else job.language,
+        "task": payload.task if payload.task else (job.task or "transcribe"),
+    }
+
+    workflow_id, run_id = await start_deferred_transcription_workflow(wf_payload)
+    job.workflow_id = workflow_id
+    job.run_id = run_id
+    job.status = "processing"
+    if job.started_at is None:
+        job.started_at = datetime.utcnow()
+    await db.commit()
+
+    return {
+        "status": "accepted",
+        "job_id": job_id,
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+    }
 
 @app.post("/internal/recordings/upload",
           status_code=status.HTTP_201_CREATED,
