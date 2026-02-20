@@ -18,6 +18,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY main.py .
+COPY transcription_provider ./transcription_provider
 
 # Create models directory
 RUN mkdir -p /app/models
@@ -29,4 +30,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 EXPOSE 8000
 
 CMD ["python3", "main.py"]
-

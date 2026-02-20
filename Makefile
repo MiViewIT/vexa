@@ -231,9 +231,9 @@ up-transcription-service: check_docker
 	@if [ "$(TRANSCRIPTION)" = "remote" ]; then \
 		exit 0; \
 	elif [ "$(TRANSCRIPTION)" = "cpu" ]; then \
-		cd services/transcription-service && docker compose -f docker-compose.cpu.yml up -d; \
+		cd services/transcription-service && docker compose -f docker-compose.cpu.yml up -d --build; \
 	elif [ "$(TRANSCRIPTION)" = "gpu" ]; then \
-		cd services/transcription-service && docker compose up -d; \
+		cd services/transcription-service && docker compose up -d --build; \
 	fi
 
 # Stop transcription-service
